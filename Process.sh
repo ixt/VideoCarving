@@ -4,6 +4,7 @@ VIDEO=$2
 HEADEREND=$(sed -n "/##/=" "$SUBS")
 WORKINGDIR=$(dirname $0)
 cd $WORKINGDIR
+mkdir .cuts
 touch .temp
 echo "" > .temp
 # Clean Off Header 
@@ -17,24 +18,16 @@ sed -i -e "/-->/d" \
     -e "s/<c.color[0-F]*[^>]>//g" \
     -e "s/[[:space:]]//g" \
     -e "s/>/>\n/g" \
-    -e "/^$/d" \
     .temp
 
-if [ ! $QUIET ]; then echo "[*] Filling in the blanks"; fi
-# Not the best solution to missing stamps 
-# but its the best I can think rn 
-# just take the previous stamp and add it
-while read LINETO; do
-    LINEFROM=$(( LINETO - 1 ))
-    until grep -q -E ">" <(sed -e "$LINEFROM"'!d' .temp); do
-        (( LINEFROM -= 1 ))
-    done
-    STAMP=$(sed -e "$LINEFROM"'!d' .temp | cut -d"<" -f2 )
-    sed -i -e "$LINETO"'s/$/<'"$STAMP"'/' .temp
-done < <(sed -n "/[^>]$/=" .temp)  
+sed -i \
+    -e "/[^>]$/d" \
+    -e "/^$/d" \
+    -e "s/</|/g" \
+    -e "s/>//g" \
+    .temp
 
-sed -i -e "s/</|/g" -e "s/>//g" .temp
-
+# making timestamps into millis since start
 while read LINE; do
     STAMP=$(sed -e "$LINE"'!d' -e "s/:/./g" .temp | cut -d"|" -f2)
     IFS=. read -a STAMP_EL <<< "$STAMP"
@@ -42,23 +35,21 @@ while read LINE; do
     sed -i "$LINE"'s/$/|'"$MS"'/' .temp
 done < <(sed -n "/|/=" .temp)
 
-last=()
+TIMEBEFORE="30"
 while read row; do
     IFS="|" read -a stamp <<< "$row"
-
-    echo "Stamp: ${last[1]} to ${stamp[1]} Phrase: ${last[0]}"
-
-    if [ ! ${last[0]} == "[Music]" ]; then
-        length=$(bc -l <<< "scale=3;(${stamp[2]} - ${last[2]}) / 1000")
-        if [ ! ${length} == "0" ]; then
-            lengthStamp=$(printf "%12s\n" "$length" | sed -e "s/ /0/g" -e 's/./:/3;s/./:/6')
-            ffmpeg -ss ${last[1]} -i "${VIDEO}" -ss 00:00:00 -to $lengthStamp -async 1 "${last[0]}.mp4"
-            SHA1=$(sha1sum "${last[0]}.mp4" | cut -d" " -f 1)
-            mv "${last[0]}.mp4" "cuts/${last[0]}-${SHA1}.mp4" 
-        fi
-    fi
-    last[0]=${stamp[0]}
-    last[1]=${stamp[1]}
-    last[2]=${stamp[2]}
+    inputmillis=${stamp[2]}
+    word=${stamp[0]}
+    seek=$(bc -l <<< "$inputmillis - $TIMEBEFORE")
+    millis=$(printf %03d "$(bc -l <<< "scale=0;$seek % 1000")")
+    seek=$(bc -l <<< "scale=0;($seek - $millis)/1000")
+    seconds=$(printf %02d "$(bc -l <<< "scale=0;$seek % 60")")
+    seek=$(bc -l <<< "scale=0;($seek - $seconds)/60")
+    minutes=$(printf %02d "$(bc -l <<< "scale=0;$seek % 60")")
+    hours=$(printf %02d "$(bc -l <<< "scale=0;($seek - $minutes)/60")")
+    stamp=$(echo $hours:$minutes:$seconds.$millis)
+    #ffmpeg -ss "$stamp" -i "$VIDEO" -ss 00:00:00 -t 0.3 -async 1 -c:v mpeg4 -q:v 1 -c:a aac -q:a 100 $word.mp4 
+    ffmpeg -ss "$stamp" -i "$VIDEO" -ss 00:00:00 -t 0.3 -c copy cuts/$word.mp4 
+    #SHA1=$(sha1sum $word.mp4 | cut -d" " -f 1)
+    #mv $word.mp4 cuts/$word-$SHA1.mp4
 done < .temp
-
