@@ -9,14 +9,14 @@ cd $WORKINGDIR
 echo "" > $TEMPTIMES
 
 # TODO:
-#   [ ]: Better Colored Output
+#   [*]: Better Colored Output
+#   [ ]: Move all processing to RAM to help prevent needless disk wear
 #   [ ]: More options & finetuning
 #   [ ]: More precise mode that auto adjusts a few times
-#   [ ]: Autocompile the binaries
 #   [ ]: Look for libraries that are needed
-#   [ ]: Move all processing to RAM to help prevent needless disk wear
-#   [ ]: Implement better file globbing
 #   [ ]: Modularise code into functions more & move to more native bash functions
+#   [ ]: Implement better file globbing
+#   [ ]: Autocompile the binaries
 
 millis_to_stamp(){
     seek="${1/./}"
@@ -32,12 +32,13 @@ millis_to_stamp(){
 # Clean Off Header 
 LANG=$(head "$SUBS" | grep Language | head -1 | cut -d":" -f2 | xargs echo)
 if [[ "$LANG" == "en" ]]; then
-    if [[ ! $QUIET ]]; then echo "[*] Cleaning Header - en (auto generated)"; fi
+    if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Cleaning Subs - en (auto generated)"; fi
     HEADEREND=$(sed -n "/##/=" "$SUBS")
     tail -n+$(( HEADEREND + 3 )) "$SUBS" >> $TEMPWORDS
     sed -i -e "/-->/d;s/<c\.color[0-F]*>//g;s/<[0-9.:/c]*>//g;s/ /\n/g;s/\[Music\]//g" $TEMPWORDS
     sed -i -e "/^$/d" $TEMPWORDS
 else
+    if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Cleaning Subs - en or other"; fi
     tail -n+5 "$SUBS" | sed -e "/-->/d;s/\*.*[^*]\*//g;/^$/d" -e "s/[[:space:]]/\n/g" | sed -e "s/[[:punct:]]*//g" -e "/^$/d" >> $TEMPWORDS
 fi
 
@@ -45,6 +46,7 @@ fi
 sed -i $TEMPWORDS -e "s/[<>]/\n/g"  
 sed -i $TEMPWORDS -e "/^\([[:space:]]*\|c\|\/c\)$/d;/[:.]/d;s/ //"
 
+if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Using Aeneas to realign subs"; fi
 # Uses aeneas to enforce title syncronisation
 python -m aeneas.tools.execute_task "$VIDEO" "$TEMPWORDS" "task_language=eng|os_task_file_format=csv|is_text_type=plain" $TEMPTIMES
 
@@ -53,7 +55,7 @@ FAILURES=0
 ERRORS=0
 TEMPVIDEOFILE=$(mktemp --suffix=.mp4)
 TEMPAUDIOFILE=$(mktemp --suffix=.wav)
-if [ ! $QUIET ]; then echo "[*] Video Cutting"; fi
+if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Video Cutting"; fi
 for occurance in $(cat $TEMPTIMES); do 
     # mpv "$VIDEO" --start ${millis[1]} --end ${millis[2]} --really-quiet
 
@@ -68,21 +70,23 @@ for occurance in $(cat $TEMPTIMES); do
         ffmpeg -loglevel panic -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
         RESULT=$(./RecogniseAudio.pyo --file-name "${TEMPAUDIOFILE}")
         if [[ "$RESULT" == "${stamp[2]}" ]]; then
-            : (( SUCESSES += 1 ))
-            echo "[*] Match: \"$RESULT\""
+            : $(( SUCESSES += 1 ))
+            printf '\e[1;32m%-6s\e[m\n' "[SUCC] Match: \"$RESULT\""
             HASH=$(sha1sum "$TEMPVIDEOFILE" | cut -d" " -f1)
             cp "$TEMPVIDEOFILE" "cuts/${stamp[2]}+$HASH+$ID.mp4"
         elif [[ "$RESULT" == "" ]]; then
-            echo "[ERRR] No words found in audio"
-            : (( ERROR += 1 ))
+            printf '\e[1;31m%-6s\e[m\n' "[ERRR] No words found in audio"
+            : $(( ERRORS += 1 ))
         elif [[ "$RESULT" == "Error reading audio" ]]; then
-            echo "[ERRR] Audio probably too short: \"$occurance\""
-            : (( ERROR += 1 ))
+            printf '\e[1;31m%-6s\e[m\n' "[ERRR] Audio probably too short: \"$occurance\""
+            : $(( ERRORS += 1 ))
         else
-            echo "[FAIL] Not a Match: \"${stamp[2]}\" vs \"$RESULT\""
-            : (( FAILURES += 1 ))
+            printf '\e[1;30m%-6s\e[m\n' "[FAIL] Not a Match: \"${stamp[2]}\" vs \"$RESULT\""
+            : $(( FAILURES += 1 ))
         fi
     fi
 done
 
-echo "$SUCESSES Sucesses, $ERRORS Errors, $FAILURES Failures"
+printf '\e[1;32m%-6s\e[m' "$SUCESSES Sucesses "
+printf '\e[1;31m%-6s\e[m' "$ERRORS Errors "
+printf '\e[1;30m%-6s\e[m\n' "$FAILURES Failures"
