@@ -1,11 +1,12 @@
 #!/bin/bash
 # TODO:
+#   [*]: A damn status bar so I dont have to do maths in my head
 #   [ ]: JSON info file for every downloaded video
 #   [ ]: More precise mode that auto adjusts a few times
 #   [ ]: Automatically ignore videos that will probably be too short
 #   [ ]: Look for libraries that are needed
 #   [ ]: Install script for apt systems
-#   [ ]: A damn status bar so I dont have to do maths in my head
+#   [ ]: Fix options
 
 dusage() {
 echo <<EOS
@@ -84,7 +85,6 @@ aenas_based_stamps(){
 espeak_based_stamps(){
     # Clean Off Header 
     if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Cleaning Subs"; fi
-    sed -n "/##/=" $SUBS
     tail +$(( `sed -n "/##/=" "$SUBS"` + 3 )) "$SUBS" >> "$TEMPWORDS"
     
     # Clean Gunk
@@ -119,11 +119,25 @@ espeak_based_stamps(){
         theword=$(echo $row | cut -d"|" -f 1 | sed -e "s/[^[:alpha:]]//g")
         InputMillis=${stamp[2]}
         WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
-        StartMillis=$(( InputMillis - (WordLength /2)))
-        EndMillis=$(( StartMillis + WordLength ))
+        StartMillis=$(( InputMillis - WordLength))
+        #EndMillis=$(( StartMillis + WordLength ))
+        EndMillis=$InputMillis
         : $(( Wc += 1 )) > /dev/null
         echo "f$(printf %06d "$Wc"),$StartMillis,$EndMillis,\"$theword\"" >> "$TEMPTIMES"
     done < $TEMPWORDS
+}
+
+progress_update(){
+    STRING="[ "
+    PERCENT=$(bc -l <<< "($COUNTER / $AMOUNTOFENTRIES) * 100" | cut -d. -f1 | xargs printf %03d )
+    BLOCKS=$(bc -l <<< "$COLUMNS * ($PERCENT / 100)" | cut -d. -f1)
+    for block in `seq 1 $BLOCKS`; do
+        STRING="${STRING}#"
+    done
+    for block in `seq 1 $(( COLUMNS - BLOCKS ))`; do
+        STRING="${STRING} "
+    done
+    echo -ne "\b$STRING ]$PERCENT% ]\r" 
 }
 
 main() {
@@ -160,17 +174,28 @@ main() {
     TEMPTIMES=$(mktemp $TEMPDIR/XXXX)
     ID=$(basename $SUBS | sed -e "s/\..*//g")
 
-    aenas_based_stamps
-    #espeak_based_stamps
+    #aenas_based_stamps
+    espeak_based_stamps
 
+    TEMPVIDEOFILE=$(mktemp --suffix=.mp4 $TEMPDIR/XXXX)
+    TEMPAUDIOFILE=$(mktemp --suffix=.wav $TEMPDIR/XXXX)
+
+    # Progress related variables 
+    COLUMNS=$(bc -l <<< "$(tput cols) - 10")
+    BLANK=""
+    for block in `seq 1 $(( COLUMNS + 10 ))`; do 
+       BLANK="${BLANK} " 
+    done
+    AMOUNTOFENTRIES=$(wc -l "$TEMPTIMES" | cut -d" " -f1)
+    COUNTER=0
     SUCESSES=0
     FAILURES=0
     ERRORS=0
-    TEMPVIDEOFILE=$(mktemp --suffix=.mp4 $TEMPDIR/XXXX)
-    TEMPAUDIOFILE=$(mktemp --suffix=.wav $TEMPDIR/XXXX)
+    tput cup $COLUMNS 0
+
     if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Video Cutting"; fi
     for occurance in $(cat $TEMPTIMES); do 
-    
+        : $(( COUNTER += 1 ))
         stamp[0]=$(millis_to_stamp `cut -d, -f2 <<< "$occurance"`)
         stamp[1]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f3 <<< "$occurance"`-`cut -d, -f2 <<< "$occurance"`"))
         stamp[2]=$(cut -d, -f4 <<< "$occurance" | sed -e "s/\"//g")
@@ -185,17 +210,29 @@ main() {
 
             if [[ "$RESULT" == "${stamp[2]}" ]]; then
                 : $(( SUCESSES += 1 ))
-                printf '\e[1;32m%-6s\e[m\n' "[SUCC] Match: \"$RESULT\""
+                STRING="[SUCC] Match: \"$RESULT\""
+                printf '\e[1;32m%-6s\e[m' "$STRING"
+                printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
+                progress_update 2>&2
                 HASH=$(sha1sum "$TEMPVIDEOFILE" | cut -d" " -f1)
-                cp "$TEMPVIDEOFILE" "aenas/${stamp[2]}+$HASH+$ID.mp4"
+                cp "$TEMPVIDEOFILE" "cuts/${stamp[2]}+$HASH+$ID.mp4"
             elif [[ "$RESULT" == "" ]]; then
-                printf '\e[1;31m%-6s\e[m\n' "[ERRR] No words found in audio"
+                STRING="[ERRR] No words found in audio"
+                printf '\e[1;31m%-6s\e[m' "$STRING"
+                printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
+                progress_update 2>&2
                 : $(( ERRORS += 1 ))
             elif [[ "$RESULT" == "Error reading audio" ]]; then
-                printf '\e[1;31m%-6s\e[m\n' "[ERRR] Audio probably too short: \"$occurance\""
+                STRING="[ERRR] Audio probably too short: \"$occurance\""
+                printf '\e[1;31m%-6s\e[m' "$STRING"
+                printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
+                progress_update 2>&2
                 : $(( ERRORS += 1 ))
             else
-                printf '\e[1;30m%-6s\e[m\n' "[FAIL] Not a Match: \"${stamp[2]}\" vs \"$RESULT\""
+                STRING="[FAIL] Not a Match: \"${stamp[2]}\" vs \"$RESULT\""
+                printf '\e[1;30m%-6s\e[m' "$STRING" 
+                printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
+                progress_update 2>&2
                 : $(( FAILURES += 1 ))
             fi
         fi
