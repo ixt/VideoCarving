@@ -1,9 +1,9 @@
 #!/bin/bash
 # TODO:
-#   [*]: A damn status bar so I dont have to do maths in my head
-#   [ ]: JSON info file for every downloaded video
-#   [ ]: More precise mode that auto adjusts a few times
-#   [ ]: Automatically ignore videos that will probably be too short
+#   [*]: JSON info file for every downloaded video
+#   [~]: More precise mode that auto adjusts a few times
+#   [ ]: Implement Soundex to try before auto adjustments
+#   [ ]: Implement inital load of corpus to remove terms that are already to 1000 terms
 #   [ ]: Look for libraries that are needed
 #   [ ]: Install script for apt systems
 #   [ ]: Fix options
@@ -47,7 +47,7 @@ exit 0
 }
 
 millis_to_stamp(){
-    local seek="${1/./}"
+    local seek=$(cut -d. -f1 <<< "$1")
     local millis=$(printf %03d "$(bc -l <<< "scale=0;$seek % 1000")")
     local seek=$(bc -l <<< "scale=0;($seek - $millis)/1000")
     local seconds=$(printf %02d "$(bc -l <<< "scale=0;$seek % 60")")
@@ -117,13 +117,14 @@ espeak_based_stamps(){
     while read row; do
         IFS="|" read -a stamp <<< "$row"
         theword=$(echo $row | cut -d"|" -f 1 | sed -e "s/[^[:alpha:]]//g")
-        InputMillis=${stamp[2]}
-        WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
-        StartMillis=$(( InputMillis - WordLength))
-        #EndMillis=$(( StartMillis + WordLength ))
-        EndMillis=$InputMillis
+        InputMillis=${stamp[2]:="NA"}
+        if grep -q --regex="^$theword$" corpus.txt; then
+            WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
+            StartMillis=$( bc -l <<< "scale=3;$InputMillis" )
+            EndMillis=$( bc -l <<< "scale=3;$InputMillis + $WordLength" )
+            echo "f$(printf %06d "$Wc"),$StartMillis,$EndMillis,\"$theword\"" >> "$TEMPTIMES"
+        fi
         : $(( Wc += 1 )) > /dev/null
-        echo "f$(printf %06d "$Wc"),$StartMillis,$EndMillis,\"$theword\"" >> "$TEMPTIMES"
     done < $TEMPWORDS
 }
 
@@ -137,7 +138,7 @@ progress_update(){
     for block in `seq 1 $(( COLUMNS - BLOCKS ))`; do
         STRING="${STRING} "
     done
-    echo -ne "\b$STRING ]$PERCENT% ]\r" 
+    echo -ne "\b$STRING ] ${PERCENT:1}% ]\r" 
 }
 
 main() {
@@ -153,7 +154,8 @@ main() {
             *) dusage ;;
         esac
     done
-    WORKINGDIR=$(dirname $0)
+    WORKINGDIR=$(readlink -e $0 | rev | cut -d/ -f2- | rev )
+    OUTPUTDIR=${OUTPUTDIR:=$WORKINGDIR/cuts}
     cd $WORKINGDIR
 
     TEMPDIR=$(mktemp -d ./XXXX)
@@ -163,7 +165,8 @@ main() {
 
     if [[ "$DOWNLOAD" ]]; then
         pushd $TEMPDIR
-        youtube-dl --write-auto-sub --id $DOWNLOAD
+        youtube-dl --write-auto-sub --id --write-info-json $DOWNLOAD
+        mv *.json $OUTPUTDIR/VIDEO-INFO/
         SUBS="$TEMPDIR/$DOWNLOAD.en.vtt"
         VIDEO="$TEMPDIR/$DOWNLOAD.mp4"
         popd
@@ -201,12 +204,31 @@ main() {
         stamp[2]=$(cut -d, -f4 <<< "$occurance" | sed -e "s/\"//g")
     
         if grep "^${stamp[2]}$" corpus.txt -q; then
+            
+            CountToThree=0
 
-            ffmpeg -loglevel panic -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
-            -async 1 -c:v mpeg4 -q:v 1 -c:a aac -q:a 100 "${TEMPVIDEOFILE}" -y >/dev/null 2>&1
-            ffmpeg -loglevel panic -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
+            while [[ "$CountToThree" -lt "3" ]]; do
+                case "$CountToThree" in
+                    1) 
+                        stamp[0]=$(millis_to_stamp `cut -d, -f2 <<< "$occurance"`)
+                        stamp[1]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f3 <<< "$occurance"`-`cut -d, -f2 <<< "$occurance"` - 100"))
+                        ;;
+                    2) 
+                        stamp[0]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f2 <<< "$occurance"`- 100"))
+                        stamp[1]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f3 <<< "$occurance"`-`cut -d, -f2 <<< "$occurance"`"))
+                        ;;
+                esac
+                ffmpeg -loglevel panic -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
+                -async 1 -c:v mpeg4 -q:v 1 -c:a aac -q:a 100 "${TEMPVIDEOFILE}" -y >/dev/null 2>&1
+                ffmpeg -loglevel panic -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
 
-            RESULT=$(./RecogniseAudio.pyo --file-name "${TEMPAUDIOFILE}")
+                RESULT=$(./RecogniseAudio.pyo --file-name "${TEMPAUDIOFILE}")
+                if [[ "$RESULT" == "${stamp[2]}" ]]; then 
+                    CountToThree=4
+                else
+                    : $(( CountToThree += 1 ))
+                fi
+            done
 
             if [[ "$RESULT" == "${stamp[2]}" ]]; then
                 : $(( SUCESSES += 1 ))
@@ -215,7 +237,10 @@ main() {
                 printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
                 progress_update 2>&2
                 HASH=$(sha1sum "$TEMPVIDEOFILE" | cut -d" " -f1)
-                cp "$TEMPVIDEOFILE" "cuts/${stamp[2]}+$HASH+$ID.mp4"
+                if [[ ! -d "$OUTPUTDIR/${stamp[2]}" ]]; then
+                    mkdir -p "$OUTPUTDIR/${stamp[2]}"
+                fi
+                cp "$TEMPVIDEOFILE" "$OUTPUTDIR/${stamp[2]}/${stamp[2]}+$HASH+$ID.mp4"
             elif [[ "$RESULT" == "" ]]; then
                 STRING="[ERRR] No words found in audio"
                 printf '\e[1;31m%-6s\e[m' "$STRING"
