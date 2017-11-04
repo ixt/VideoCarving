@@ -2,11 +2,13 @@
 # TODO:
 #   [*]: JSON info file for every downloaded video
 #   [~]: More precise mode that auto adjusts a few times
-#   [ ]: Implement Soundex to try before auto adjustments
+#   [ ]: Fix non-auto subs
+#   [ ]: Implement Soundex or Double Metaphone to try before auto adjustments
 #   [ ]: Implement inital load of corpus to remove terms that are already to 1000 terms
 #   [ ]: Look for libraries that are needed
 #   [ ]: Install script for apt systems
 #   [ ]: Fix options
+#   [ ]: Add hardware acceleration options properly
 
 dusage() {
 echo <<EOS
@@ -21,8 +23,6 @@ Options:
     -q          quiet
     -h          this screen
     -r          make a ramdisk
-    -v          input video
-    -s          input subs
     -i          youtube download with id          
 EOS
 exit 1
@@ -39,8 +39,6 @@ Options:
     -q          quiet
     -h          this screen
     -r          make a ramdisk
-    -v          input video
-    -s          input subs
     -i          youtube download with id          
 EOS
 exit 0
@@ -61,17 +59,8 @@ aenas_based_stamps(){
     echo "" > $TEMPTIMES
     
     # Clean Off Header 
-    LANG=$(head "$SUBS" | grep Language | head -1 | cut -d":" -f2 | xargs echo)
-    if [[ "$LANG" == "en" ]]; then
-        if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Cleaning Subs - en (auto generated)"; fi
-        HEADEREND=$(sed -n "/##/=" "$SUBS")
-        tail -n+$(( HEADEREND + 3 )) "$SUBS" >> $TEMPWORDS
-        sed -i -e "/-->/d;s/<c\.color[0-F]*>//g;s/<[0-9.:/c]*>//g;s/ /\n/g;s/\[Music\]//g" $TEMPWORDS
-        sed -i -e "/^$/d" $TEMPWORDS
-    else
-        if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Cleaning Subs - en or other"; fi
-        tail -n+5 "$SUBS" | sed -e "/-->/d;s/\*.*[^*]\*//g;/^$/d" -e "s/[[:space:]]/\n/g" | sed -e "s/[[:punct:]]*//g" -e "/^$/d" >> $TEMPWORDS
-    fi
+    if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Cleaning Subs - en or other"; fi
+    tail -n+5 "$SUBS" | sed -e "/-->/d;s/\*.*[^*]\*//g;/^$/d" -e "s/[[:space:]]/\n/g" | sed -e "s/[[:punct:]]*//g" -e "/^$/d" >> $TEMPWORDS
     
     # Make a ordered list of the words in the subtitles
     sed -i $TEMPWORDS -e "s/[<>]/\n/g"  
@@ -120,11 +109,12 @@ espeak_based_stamps(){
         InputMillis=${stamp[2]:="NA"}
         if grep -q --regex="^$theword$" corpus.txt; then
             WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
-            StartMillis=$( bc -l <<< "scale=3;$InputMillis" )
-            EndMillis=$( bc -l <<< "scale=3;$InputMillis + $WordLength" )
+            StartMillis=$( bc -l <<< "scale=3;$InputMillis - ( $WordLength / 2 )" )
+            EndMillis=$( bc -l <<< "scale=3;$InputMillis + ( $WordLength / 2 )" )
             echo "f$(printf %06d "$Wc"),$StartMillis,$EndMillis,\"$theword\"" >> "$TEMPTIMES"
         fi
         : $(( Wc += 1 )) > /dev/null
+        echo "$COUNTER"
     done < $TEMPWORDS
 }
 
@@ -142,7 +132,7 @@ progress_update(){
 }
 
 main() {
-    while getopts 'o:qhrv:s:i:' flag; do
+    while getopts 'a:o:qhrv:s:i:' flag; do
         case ${flag} in
             o) OUTPUTDIR="${OPTARG}" ;;
             h) usage ;;
@@ -151,6 +141,7 @@ main() {
             s) VIDEO="${OPTARG}" ;;
             v) SUBS="${OPTARG}" ;;
             r) RAM="true" ;;
+            a) ACCELERATOR="${OPTARG}" ;;
             *) dusage ;;
         esac
     done
@@ -165,7 +156,7 @@ main() {
 
     if [[ "$DOWNLOAD" ]]; then
         pushd $TEMPDIR
-        youtube-dl --write-auto-sub --id --write-info-json $DOWNLOAD
+        youtube-dl --write-auto-sub -f bestvideo[ext=mp4]+bestaudio[ext=m4a] --id --write-info-json $DOWNLOAD
         mv *.json $OUTPUTDIR/VIDEO-INFO/
         SUBS="$TEMPDIR/$DOWNLOAD.en.vtt"
         VIDEO="$TEMPDIR/$DOWNLOAD.mp4"
@@ -177,8 +168,11 @@ main() {
     TEMPTIMES=$(mktemp $TEMPDIR/XXXX)
     ID=$(basename $SUBS | sed -e "s/\..*//g")
 
-    #aenas_based_stamps
-    espeak_based_stamps
+    if grep "\-\->" $SUBS -q; then
+       aenas_based_stamps
+    else
+       espeak_based_stamps
+    fi
 
     TEMPVIDEOFILE=$(mktemp --suffix=.mp4 $TEMPDIR/XXXX)
     TEMPAUDIOFILE=$(mktemp --suffix=.wav $TEMPDIR/XXXX)
@@ -218,15 +212,15 @@ main() {
                         stamp[1]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f3 <<< "$occurance"`-`cut -d, -f2 <<< "$occurance"`"))
                         ;;
                 esac
-                ffmpeg -loglevel panic -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
+                ffmpeg -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
                 -async 1 -c:v mpeg4 -q:v 1 -c:a aac -q:a 100 "${TEMPVIDEOFILE}" -y >/dev/null 2>&1
-                ffmpeg -loglevel panic -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
+                ffmpeg -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
 
                 RESULT=$(./RecogniseAudio.pyo --file-name "${TEMPAUDIOFILE}")
                 if [[ "$RESULT" == "${stamp[2]}" ]]; then 
                     CountToThree=4
                 else
-                    : $(( CountToThree += 1 ))
+                    CountToThree=4
                 fi
             done
 
