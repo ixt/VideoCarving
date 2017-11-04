@@ -1,9 +1,8 @@
 #!/bin/bash
 # TODO:
-#   [*]: JSON info file for every downloaded video
+#   [*]: Implement Soundex or Double Metaphone to try before auto adjustments
 #   [~]: More precise mode that auto adjusts a few times
 #   [ ]: Fix non-auto subs
-#   [ ]: Implement Soundex or Double Metaphone to try before auto adjustments
 #   [ ]: Implement inital load of corpus to remove terms that are already to 1000 terms
 #   [ ]: Look for libraries that are needed
 #   [ ]: Install script for apt systems
@@ -102,6 +101,7 @@ espeak_based_stamps(){
     done < <(sed -n "/|/=" "$TEMPWORDS")
     
     if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Adjusting Stamps with approx word lengths"; fi
+    # Add the length of words to the timestamps, this is due to only getting one stamp with this method
     Wc=0
     while read row; do
         IFS="|" read -a stamp <<< "$row"
@@ -119,6 +119,9 @@ espeak_based_stamps(){
 }
 
 progress_update(){
+    # Function is not portable, it will only work like this in this script
+    # Draws a bar of poundsigns accross the bottom of terminal to give visual progress
+    # It is bound to the amount of line done vs total lines to do of subtitle text
     STRING="[ "
     PERCENT=$(bc -l <<< "($COUNTER / $AMOUNTOFENTRIES) * 100" | cut -d. -f1 | xargs printf %03d )
     BLOCKS=$(bc -l <<< "$COLUMNS * ($PERCENT / 100)" | cut -d. -f1)
@@ -129,6 +132,32 @@ progress_update(){
         STRING="${STRING} "
     done
     echo -ne "\b$STRING ] ${PERCENT:1}% ]\r" 
+}
+
+double_metaphone_czech(){
+    # Reasonably portable, DeMeta.pyo is a compiled Python script that takes a word as 
+    # an argument and outputs its Double Metaphone codes, this is compared then with 
+    # the premade codes in the corpus-demeta.txt that should have been generated 
+    # With WordEstimates.sh
+
+    REALWORD=$1
+    READWORD=$2
+    
+    OUTPUT=$($WORKINGDIR/DeMeta.pyo -w "$2" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
+    INPUT=$(grep --regex="^$REALWORD," corpus-demeta.txt | cut -d, -f2-)
+    
+    if [ "$INPUT" == "$OUTPUT" ]; then
+        return 0
+    else
+        IFS=, read -a OUTPUTCODES <<< "$OUTPUT"
+        IFS=, read -a INPUTCODES <<< "$INPUT"
+        for code in ${OUTPUTCODES[@]}; do
+            for incode in ${INPUTCODES[@]}; do
+                [ "$code" == "$incode" ] && return 0
+            done
+        done 
+        return 1
+    fi
 }
 
 main() {
@@ -145,20 +174,41 @@ main() {
             *) dusage ;;
         esac
     done
+    # Get the fullpath of the directory the script is in and set workingdir to it
+    # output is cuts by default but can be changed with an option
+
     WORKINGDIR=$(readlink -e $0 | rev | cut -d/ -f2- | rev )
     OUTPUTDIR=${OUTPUTDIR:=$WORKINGDIR/cuts}
     cd $WORKINGDIR
+
+    # Here is where the creation of a new temporary corpus text should be made
+    # This will get better speed as more videos are added to the database 
+
+
+    # This next part will likely make the script only work on linux, this is to
+    # help with avoiding wearing out a drive it is an option so that things can 
+    # be tested or used without root
 
     TEMPDIR=$(mktemp -d ./XXXX)
     if [[ "$RAM" ]]; then
         sudo mount -t tmpfs -o size=4096m tmpfs $TEMPDIR/
     fi
 
+
+    # The download option is the recommended, the subs of any site should work when script is done
     if [[ "$DOWNLOAD" ]]; then
         pushd $TEMPDIR
-        youtube-dl --write-auto-sub -f bestvideo[ext=mp4]+bestaudio[ext=m4a] --id --write-info-json $DOWNLOAD
+        # Some youtube ID's begin with -, this isnt fun
+        CUTBACK=$(echo $DOWNLOAD | sed -e "s/[a-zA-Z0-9\_\-]//g")
+        if [ $CUTBACK ]; then
+            youtube-dl --write-auto-sub -f bestvideo[ext=mp4]+bestaudio[ext=m4a] --id --write-info-json '${DOWNLOAD}'
+        else
+            youtube-dl --write-auto-sub -f bestvideo[ext=mp4]+bestaudio[ext=m4a] --id --write-info-json https://youtube.com/watch?v=${DOWNLOAD}
+        fi
         mv *.json $OUTPUTDIR/VIDEO-INFO/
+        # This will only work for english right now 
         SUBS="$TEMPDIR/$DOWNLOAD.en.vtt"
+        # The video variable should really be adjusted to find the matching videos for the subs 
         VIDEO="$TEMPDIR/$DOWNLOAD.mp4"
         popd
     fi
@@ -168,10 +218,12 @@ main() {
     TEMPTIMES=$(mktemp $TEMPDIR/XXXX)
     ID=$(basename $SUBS | sed -e "s/\..*//g")
 
-    if grep "\-\->" $SUBS -q; then
-       aenas_based_stamps
-    else
+
+    # If the subs adjust colour they are usually auto-generated, this works well-enough
+    if grep "::cue" $SUBS -q; then
        espeak_based_stamps
+    else
+       aenas_based_stamps
     fi
 
     TEMPVIDEOFILE=$(mktemp --suffix=.mp4 $TEMPDIR/XXXX)
@@ -200,7 +252,6 @@ main() {
         if grep "^${stamp[2]}$" corpus.txt -q; then
             
             CountToThree=0
-
             while [[ "$CountToThree" -lt "3" ]]; do
                 case "$CountToThree" in
                     1) 
@@ -236,23 +287,36 @@ main() {
                 fi
                 cp "$TEMPVIDEOFILE" "$OUTPUTDIR/${stamp[2]}/${stamp[2]}+$HASH+$ID.mp4"
             elif [[ "$RESULT" == "" ]]; then
-                STRING="[ERRR] No words found in audio"
+                STRING="[ERRO] No words found in audio"
                 printf '\e[1;31m%-6s\e[m' "$STRING"
                 printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
                 progress_update 2>&2
                 : $(( ERRORS += 1 ))
             elif [[ "$RESULT" == "Error reading audio" ]]; then
-                STRING="[ERRR] Audio probably too short: \"$occurance\""
+                STRING="[ERRO] Audio probably too short: \"$occurance\""
                 printf '\e[1;31m%-6s\e[m' "$STRING"
                 printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
                 progress_update 2>&2
                 : $(( ERRORS += 1 ))
             else
-                STRING="[FAIL] Not a Match: \"${stamp[2]}\" vs \"$RESULT\""
-                printf '\e[1;30m%-6s\e[m' "$STRING" 
-                printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
-                progress_update 2>&2
-                : $(( FAILURES += 1 ))
+                if double_metaphone_czech "${stamp[2]}" "$RESULT"; then
+                    STRING="[SUCC] Maybe Match: \"${stamp[2]}\" vs \"$RESULT\""
+                    printf '\e[1;32m%-6s\e[m' "$STRING" 
+                    printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
+                    progress_update 2>&2
+                    : $(( SUCESSES += 1 ))
+                    HASH=$(sha1sum "$TEMPVIDEOFILE" | cut -d" " -f1)
+                    if [[ ! -d "$OUTPUTDIR/${stamp[2]}" ]]; then
+                        mkdir -p "$OUTPUTDIR/${stamp[2]}"
+                    fi
+                    cp "$TEMPVIDEOFILE" "$OUTPUTDIR/${stamp[2]}/${stamp[2]}+$HASH+$ID.mp4"
+                else
+                    STRING="[FAIL] Not a Match: \"${stamp[2]}\" vs \"$RESULT\""
+                    printf '\e[1;30m%-6s\e[m' "$STRING" 
+                    printf '%*.*s\n' 0 $((${#BLANK} - ${#STRING} )) "$BLANK"
+                    progress_update 2>&2
+                    : $(( FAILURES += 1 ))
+                fi
             fi
         fi
     done
