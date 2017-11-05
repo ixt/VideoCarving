@@ -1,13 +1,13 @@
 #!/bin/bash
 # TODO:
-#   [*]: Implement Soundex or Double Metaphone to try before auto adjustments
+#   [*]: Fix non-auto subs
+#   [*]: Temporary Corpus to adjust if a video can have multiple cuts of the same word
+#   [*]: Add hardware acceleration options properly
 #   [~]: More precise mode that auto adjusts a few times
-#   [ ]: Fix non-auto subs
 #   [ ]: Implement inital load of corpus to remove terms that are already to 1000 terms
 #   [ ]: Look for libraries that are needed
 #   [ ]: Install script for apt systems
 #   [ ]: Fix options
-#   [ ]: Add hardware acceleration options properly
 
 dusage() {
 echo <<EOS
@@ -44,7 +44,7 @@ exit 0
 }
 
 millis_to_stamp(){
-    local seek=$(cut -d. -f1 <<< "$1")
+    local seek=$(bc -l <<< "scale=0;sqrt($1^2)*1000" | cut -d. -f1)
     local millis=$(printf %03d "$(bc -l <<< "scale=0;$seek % 1000")")
     local seek=$(bc -l <<< "scale=0;($seek - $millis)/1000")
     local seconds=$(printf %02d "$(bc -l <<< "scale=0;$seek % 60")")
@@ -55,19 +55,37 @@ millis_to_stamp(){
 }
 
 aenas_based_stamps(){
+    AENAS="true"
     echo "" > $TEMPTIMES
     
     # Clean Off Header 
     if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Cleaning Subs - en or other"; fi
-    tail -n+5 "$SUBS" | sed -e "/-->/d;s/\*.*[^*]\*//g;/^$/d" -e "s/[[:space:]]/\n/g" | sed -e "s/[[:punct:]]*//g" -e "/^$/d" >> $TEMPWORDS
-    
-    # Make a ordered list of the words in the subtitles
-    sed -i $TEMPWORDS -e "s/[<>]/\n/g"  
-    sed -i $TEMPWORDS -e "/^\([[:space:]]*\|c\|\/c\)$/d;/[:.]/d;s/ //"
+    tail +$( sed -n "/\-\->/=" "$SUBS" | head -1 ) "$SUBS" | sed -e "/-->/d;s/\*.*[^*]\*//g;/^$/d" -e "s/[[:space:]]/\n/g;s/</\n/g;s/'//g"| sed -e "/^\//d;/^c>/d;/:/d;/^c./d;/^$/d" >> $TEMPWORDS
     
     if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Using Aeneas to realign subs"; fi
     # Uses aeneas to enforce title syncronisation
-    python -m aeneas.tools.execute_task "$VIDEO" "$TEMPWORDS" "task_language=eng|os_task_file_format=csv|is_text_type=plain" $TEMPTIMES
+    ANOTHERTEMP=$(mktemp $TEMPDIR/XXXX)
+    python -m aeneas.tools.execute_task "$VIDEO" "$TEMPWORDS" "task_language=eng|os_task_file_format=csv|is_text_type=plain" $ANOTHERTEMP
+
+    if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] When words are aligned but beginning is same as end add espeak value"; fi
+    Wc=0
+    while read row; do
+        IFS="," read -a stamp <<< "$row"
+        theword=$(echo $row | cut -d"," -f4 | sed -e "s/[^[:alpha:]]//g")
+        InputMillis=${stamp[2]:="NA"}
+        if [ "${stamp[1]}" == "${stamp[2]}" -o "$(bc -l <<< "scale=3;(${stamp[2]} - ${stamp[1]}) > 1")" == "1" -o "$(bc -l <<< "scale=3;(${stamp[2]} - ${stamp[1]}) < 0.1")" == "1" ]; then
+            if grep -q --regex="^$theword$" corpus.txt; then
+                WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
+                StartMillis=$( bc -l <<< "scale=3;$InputMillis - ( ($WordLength/1000) / 2 )" )
+                EndMillis=$( bc -l <<< "scale=3;$InputMillis + ( ($WordLength/1000) / 2 )" )
+                echo "f$(printf %06d "$Wc"),0${StartMillis//-/},0${EndMillis//-/},\"$theword\"" >> "$TEMPTIMES"
+            fi
+        else 
+            echo "$row" >> "$TEMPTIMES"
+        fi
+        : $(( Wc += 1 )) > /dev/null
+    done < $ANOTHERTEMP
+
 }
 
 espeak_based_stamps(){
@@ -98,7 +116,7 @@ espeak_based_stamps(){
         IFS=. read -a STAMP_EL <<< "$STAMP"
         MS=$(bc -l <<< "(((((${STAMP_EL[0]} * 60) + ${STAMP_EL[1]}) * 60 ) + ${STAMP_EL[2]}) * 1000 ) + ${STAMP_EL[3]}")
         sed -i "$LINE"'s/$/|'"$MS"'/' "$TEMPWORDS"
-    done < <(sed -n "/|/=" "$TEMPWORDS")
+    done < <(sed -n "/|/=" "$TEMPWORDS" )
     
     if [ ! $QUIET ]; then printf '\e[1;34m%-6s\e[m\n' "[INFO] Adjusting Stamps with approx word lengths"; fi
     # Add the length of words to the timestamps, this is due to only getting one stamp with this method
@@ -109,12 +127,11 @@ espeak_based_stamps(){
         InputMillis=${stamp[2]:="NA"}
         if grep -q --regex="^$theword$" corpus.txt; then
             WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
-            StartMillis=$( bc -l <<< "scale=3;$InputMillis - ( $WordLength / 2 )" )
-            EndMillis=$( bc -l <<< "scale=3;$InputMillis + ( $WordLength / 2 )" )
-            echo "f$(printf %06d "$Wc"),$StartMillis,$EndMillis,\"$theword\"" >> "$TEMPTIMES"
+            StartMillis=$( bc -l <<< "scale=3;($InputMillis - ( $WordLength / 2 )) /1000" )
+            EndMillis=$( bc -l <<< "scale=3;($InputMillis + ( $WordLength / 2 )) /1000" )
+            echo "f$(printf %06d "$Wc"),0$StartMillis,0$EndMillis,\"$theword\"" >> "$TEMPTIMES"
         fi
         : $(( Wc += 1 )) > /dev/null
-        echo "$COUNTER"
     done < $TEMPWORDS
 }
 
@@ -145,6 +162,8 @@ double_metaphone_czech(){
     
     OUTPUT=$($WORKINGDIR/DeMeta.pyo -w "$2" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
     INPUT=$(grep --regex="^$REALWORD," corpus-demeta.txt | cut -d, -f2-)
+
+    [ "$AENAS" == "true" ] && return 1
     
     if [ "$INPUT" == "$OUTPUT" ]; then
         return 0
@@ -217,6 +236,7 @@ main() {
     TEMPWORDS=$(mktemp $TEMPDIR/XXXX)
     TEMPTIMES=$(mktemp $TEMPDIR/XXXX)
     ID=$(basename $SUBS | sed -e "s/\..*//g")
+    AENAS="false"
 
 
     # If the subs adjust colour they are usually auto-generated, this works well-enough
@@ -228,6 +248,10 @@ main() {
 
     TEMPVIDEOFILE=$(mktemp --suffix=.mp4 $TEMPDIR/XXXX)
     TEMPAUDIOFILE=$(mktemp --suffix=.wav $TEMPDIR/XXXX)
+
+    # Make a temporary Corpus so that we can adjust which words to keep later
+    TEMPCORPUS=$(mktemp --suffix=.txt $TEMPDIR/XXXX)
+    cp corpus.txt $TEMPCORPUS
 
     # Progress related variables 
     COLUMNS=$(bc -l <<< "$(tput cols) - 10")
@@ -249,7 +273,7 @@ main() {
         stamp[1]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f3 <<< "$occurance"`-`cut -d, -f2 <<< "$occurance"`"))
         stamp[2]=$(cut -d, -f4 <<< "$occurance" | sed -e "s/\"//g")
     
-        if grep "^${stamp[2]}$" corpus.txt -q; then
+        if grep "^${stamp[2]}$" $TEMPCORPUS -q; then
             
             CountToThree=0
             while [[ "$CountToThree" -lt "3" ]]; do
@@ -263,9 +287,9 @@ main() {
                         stamp[1]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f3 <<< "$occurance"`-`cut -d, -f2 <<< "$occurance"`"))
                         ;;
                 esac
-                ffmpeg -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
+                ffmpeg -hwaccel vaapi -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
                 -async 1 -c:v mpeg4 -q:v 1 -c:a aac -q:a 100 "${TEMPVIDEOFILE}" -y >/dev/null 2>&1
-                ffmpeg -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
+                ffmpeg -hwaccel vaapi -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
 
                 RESULT=$(./RecogniseAudio.pyo --file-name "${TEMPAUDIOFILE}")
                 if [[ "$RESULT" == "${stamp[2]}" ]]; then 
@@ -285,6 +309,7 @@ main() {
                 if [[ ! -d "$OUTPUTDIR/${stamp[2]}" ]]; then
                     mkdir -p "$OUTPUTDIR/${stamp[2]}"
                 fi
+                sed -i -e "/^${stamp[2]}$/d" $TEMPCORPUS
                 cp "$TEMPVIDEOFILE" "$OUTPUTDIR/${stamp[2]}/${stamp[2]}+$HASH+$ID.mp4"
             elif [[ "$RESULT" == "" ]]; then
                 STRING="[ERRO] No words found in audio"
@@ -309,6 +334,7 @@ main() {
                     if [[ ! -d "$OUTPUTDIR/${stamp[2]}" ]]; then
                         mkdir -p "$OUTPUTDIR/${stamp[2]}"
                     fi
+                    sed -i -e "/^${stamp[2]}$/d" $TEMPCORPUS
                     cp "$TEMPVIDEOFILE" "$OUTPUTDIR/${stamp[2]}/${stamp[2]}+$HASH+$ID.mp4"
                 else
                     STRING="[FAIL] Not a Match: \"${stamp[2]}\" vs \"$RESULT\""
@@ -323,7 +349,7 @@ main() {
     ENDTIME=$(date +%s) 
     printf '\e[1;0m%-6s\e[m' "Started: $STARTTIME "
     printf '\e[1;0m%-6s\e[m' "Took: $(( ENDTIME - STARTTIME )) "
-    printf '\e[1;0m%-6s\e[m\n' "Completed:  "
+    printf '\e[1;0m%-6s\e[m\n' "Completed: $ENDTIME "
     printf '\e[1;32m%-6s\e[m' "$SUCESSES Sucesses "
     printf '\e[1;31m%-6s\e[m' "$ERRORS Errors "
     printf '\e[1;30m%-6s\e[m\n' "$FAILURES Failures"
