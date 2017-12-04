@@ -30,7 +30,7 @@ if [ ! -e corpus-length.txt ]; then
     done < corpus.txt
 fi
 
-if [ -e ./DeMeta.pyo ]; then
+if [ ! -e corpus-demeta.txt ]; then
     while read word; do 
         OUT=$(./DeMeta.pyo -w "$word" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
         echo "$word,$OUT" >> corpus-demeta.txt
