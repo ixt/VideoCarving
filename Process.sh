@@ -160,7 +160,11 @@ double_metaphone_czech(){
     REALWORD=$1
     READWORD=$2
     
-    OUTPUT=$($WORKINGDIR/DeMeta.pyo -w "$2" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
+    if [ "${COMPILEDPYTHON}" == "1" ]; then
+        OUTPUT=$($WORKINGDIR/DeMeta.pyo -w "$2" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
+    else
+        OUTPUT=$(python $WORKINGDIR/DeMeta.py -w "$2" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
+    fi
     INPUT=$(grep --regex="^$REALWORD," corpus-demeta.txt | cut -d, -f2-)
 
     [ "$AENAS" == "true" ] && return 1
@@ -190,6 +194,7 @@ main() {
             v) SUBS="${OPTARG}" ;;
             r) RAM="true" ;;
             a) ACCELERATOR="${OPTARG}" ;;
+            p) COMPILEDPYTHON="1" ;;
             *) dusage ;;
         esac
     done
@@ -287,11 +292,15 @@ main() {
                         stamp[1]=$(millis_to_stamp $(bc -l <<< "scale=0;`cut -d, -f3 <<< "$occurance"`-`cut -d, -f2 <<< "$occurance"`"))
                         ;;
                 esac
-                ffmpeg -hwaccel vaapi -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
+                ffmpeg -threads 4 -ss "${stamp[0]}" -i "$VIDEO" -ss 00:00:00 -t ${stamp[1]} \
                 -async 1 -c:v mpeg4 -q:v 1 -c:a aac -q:a 100 "${TEMPVIDEOFILE}" -y >/dev/null 2>&1
-                ffmpeg -hwaccel vaapi -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
+                ffmpeg -threads 4 -i "${TEMPVIDEOFILE}" -vn "${TEMPAUDIOFILE}" -y >/dev/null 2>&1
 
-                RESULT=$(./RecogniseAudio.pyo --file-name "${TEMPAUDIOFILE}")
+                if [ "${COMPILEDPYTHON}" == "1" ]; then
+                    RESULT=$(./RecogniseAudio.pyo --file-name "${TEMPAUDIOFILE}")
+                else
+                    RESULT=$(python ./RecogniseAudio.py --file-name "${TEMPAUDIOFILE}")
+                fi
                 if [[ "$RESULT" == "${stamp[2]}" ]]; then 
                     CountToThree=4
                 else
