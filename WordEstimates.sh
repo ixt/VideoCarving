@@ -32,7 +32,7 @@ fi
 
 if [ ! -e corpus-demeta.txt ]; then
     while read word; do 
-        OUT=$(./DeMeta.pyo -w "$word" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
+        OUT=$(python ./DeMeta.py -w "$word" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
         echo "$word,$OUT" >> corpus-demeta.txt
     done < corpus.txt
 fi
