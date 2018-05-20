@@ -1,0 +1,10 @@
+python
+python-pip
+espeak
+libespeak-dev
+ffmpeg
+mediainfo
+python-dev
+binfmt-support
+libxml2-dev
+libxslt1-dev
