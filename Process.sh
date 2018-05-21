@@ -9,6 +9,11 @@
 #   [ ]: Install script for apt systems
 #   [ ]: Fix options
 
+# Corpus values
+CORPUS="corpus.txt"
+CORPUSMETA="corpus-demeta.txt"
+CORPUSLENGTH="corpus-length.txt"
+
 dusage() {
 echo <<EOS
 Option not found
@@ -74,8 +79,8 @@ aenas_based_stamps(){
         theword=$(echo $row | cut -d"," -f4 | sed -e "s/[^[:alpha:]]//g")
         InputMillis=${stamp[2]:="NA"}
         if [ "${stamp[1]}" == "${stamp[2]}" -o "$(bc -l <<< "scale=3;(${stamp[2]} - ${stamp[1]}) > 1")" == "1" -o "$(bc -l <<< "scale=3;(${stamp[2]} - ${stamp[1]}) < 0.1")" == "1" ]; then
-            if grep -q --regex="^$theword$" corpus.txt; then
-                WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
+            if grep -q --regex="^$theword$" $CORPUS; then
+                WordLength=$(grep "^$theword," $CORPUSLENGTH | cut -d, -f2)
                 StartMillis=$( bc -l <<< "scale=3;$InputMillis - ( ($WordLength/1000) / 2 )" )
                 EndMillis=$( bc -l <<< "scale=3;$InputMillis + ( ($WordLength/1000) / 2 )" )
                 echo "f$(printf %06d "$Wc"),0${StartMillis//-/},0${EndMillis//-/},\"$theword\"" >> "$TEMPTIMES"
@@ -125,8 +130,8 @@ espeak_based_stamps(){
         IFS="|" read -a stamp <<< "$row"
         theword=$(echo $row | cut -d"|" -f 1 | sed -e "s/[^[:alpha:]]//g")
         InputMillis=${stamp[2]:="NA"}
-        if grep -q --regex="^$theword$" corpus.txt; then
-            WordLength=$(grep "^$theword," corpus-length.txt | cut -d, -f2)
+        if grep -q --regex="^$theword$" $CORPUS; then
+            WordLength=$(grep "^$theword," $CORPUSLENGTH | cut -d, -f2)
             StartMillis=$( bc -l <<< "scale=3;($InputMillis - ( $WordLength / 2 )) /1000" )
             EndMillis=$( bc -l <<< "scale=3;($InputMillis + ( $WordLength / 2 )) /1000" )
             echo "f$(printf %06d "$Wc"),0$StartMillis,0$EndMillis,\"$theword\"" >> "$TEMPTIMES"
@@ -165,7 +170,7 @@ double_metaphone_czech(){
     else
         OUTPUT=$(python $WORKINGDIR/DeMeta.py -w "$2" | sed -e "s/[\'\ ]//g;s/\[//;s/\]//;s/,None//")
     fi
-    INPUT=$(grep --regex="^$REALWORD," corpus-demeta.txt | cut -d, -f2-)
+    INPUT=$(grep --regex="^$REALWORD," $CORPUSMETA | cut -d, -f2-)
 
     [ "$AENAS" == "true" ] && return 1
     
@@ -184,7 +189,7 @@ double_metaphone_czech(){
 }
 
 main() {
-    while getopts 'a:o:qhrv:s:i:' flag; do
+    while getopts 'a:o:qhrv:s:i:p' flag; do
         case ${flag} in
             o) OUTPUTDIR="${OPTARG}" ;;
             h) usage ;;
@@ -223,11 +228,11 @@ main() {
     if [[ "$DOWNLOAD" ]]; then
         pushd $TEMPDIR
         # Some youtube ID's begin with -, this isnt fun
-        CUTBACK=$(echo $DOWNLOAD | sed -e "s/[a-zA-Z0-9\_\-]//g")
+        CUTBACK=$(echo "$DOWNLOAD" | sed -e "s/[a-zA-Z0-9\_\-]//g")
         if [ $CUTBACK ]; then
             youtube-dl --write-auto-sub -f bestvideo[ext=mp4]+bestaudio[ext=m4a] --id --write-info-json '${DOWNLOAD}'
         else
-            youtube-dl --write-auto-sub -f bestvideo[ext=mp4]+bestaudio[ext=m4a] --id --write-info-json https://youtube.com/watch?v=${DOWNLOAD}
+            youtube-dl --write-auto-sub -f bestvideo[ext=mp4]+bestaudio[ext=m4a] --id --write-info-json "https://youtube.com/watch?v=${DOWNLOAD}"
         fi
         mv *.json $OUTPUTDIR/VIDEO-INFO/
         # This will only work for english right now 
@@ -256,7 +261,7 @@ main() {
 
     # Make a temporary Corpus so that we can adjust which words to keep later
     TEMPCORPUS=$(mktemp --suffix=.txt $TEMPDIR/XXXX)
-    cp corpus.txt $TEMPCORPUS
+    cp $CORPUS $TEMPCORPUS
 
     # Progress related variables 
     COLUMNS=$(bc -l <<< "$(tput cols) - 10")
